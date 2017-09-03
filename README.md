@@ -9,8 +9,9 @@ EPACTS is a versatile software pipeline to perform various statistical tests for
 You can clone the current snapshot of this repository to install as well
 
 <pre>
-$ git clone https://github.com/statgen/EPACTS.git
+$ git clone https://github.com/indraniel/EPACTS.git
 $ cd EPACTS
+$ ./autogen.sh  # ensure that autotools / autoconf / automake is installed
 $ ./configure --prefix [/path/to/install]
 $ make
 $ make install
