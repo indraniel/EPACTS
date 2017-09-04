@@ -95,16 +95,17 @@ libhts_SOURCES = \
 	cram/vlen.c \
 	cram/zfio.c
 
-
 bgzip_SOURCES = bgzip.c bedidx.c version.h $(libhts_SOURCES)
 bgzip_LDADD = libtabix.a -lpthread -lm
-bgzip_CFLAGS = -pthread
+bgzip_CFLAGS = -pthread -D_GNU_SOURCE
 
 tabix_SOURCES = tabix.c bedidx.c index.c version.h $(libhts_SOURCES)
 tabix_LDADD = libtabix.a -lpthread -lm
-tabix_CFLAGS = -pthread
+tabix_CFLAGS = -pthread -D_GNU_SOURCE
 
 libtabix_a_SOURCES = bedidx.c index.c version.h $(libhts_SOURCES)
+libtabix_a_CFLAGS = -pthread -D_GNU_SOURCE
+
 
 hts.c: version.h
 
