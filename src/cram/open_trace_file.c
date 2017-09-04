@@ -78,7 +78,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "cram/open_trace_file.h"
 #include "cram/misc.h"
-#include "htslib/hfile.h"
+#include "hfile.h"
 
 /*
  * Tokenises the search path splitting on colons (unix) or semicolons
