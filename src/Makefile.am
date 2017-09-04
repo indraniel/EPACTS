@@ -4,7 +4,7 @@
 ACLOCAL_AMFLAGS = -I m4 ${ACLOCAL_FLAGS}
 
 ## Paths to include
-TABIX_VER = 0.2.5
+TABIX_VER = 1.4
 TABIX = tabix-$(TABIX_VER)
 AM_CPPFLAGS = -Wall -fpic -O2 #-I../include/ #-I$(TABIX)/
 
@@ -45,11 +45,11 @@ chaps_LDADD = libtabix.a
 anno_SOURCES = Anno.cpp IO.cpp
 anno_LDADD = libtabix.a
 
-bgzip_SOURCES = bgzip.c bedidx.c bgzf.c knetfile.c kstring.c
+bgzip_SOURCES = bgzip.c bedidx.c bgzf.c knetfile.c kstring.c hfile.c hts.c
 
-tabix_SOURCES = tabix.c bedidx.c bgzf.c knetfile.c kstring.c index.c
+tabix_SOURCES = tabix.c bedidx.c bgzf.c knetfile.c kstring.c index.c tbx.c hfile.c hts.c
 
-libtabix_a_SOURCES = bedidx.c bgzf.c knetfile.c kstring.c index.c
+libtabix_a_SOURCES = bedidx.c bgzf.c knetfile.c kstring.c index.c tbx.c hfile.c hts.c
 
 ## building libtabix.a
 #$(TABIX)/libtabix.a: ../data/$(TABIX).tar.bz2

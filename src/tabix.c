@@ -1,338 +1,544 @@
-#include <string.h>
-#include <unistd.h>
-#include <stdlib.h>
+/*  tabix.c -- Generic indexer for TAB-delimited genome position files.
+
+    Copyright (C) 2009-2011 Broad Institute.
+    Copyright (C) 2010-2012, 2014-2016 Genome Research Ltd.
+
+    Author: Heng Li <lh3@sanger.ac.uk>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.  */
+
+#include <config.h>
+
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <getopt.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "tbx.h"
+#include "sam.h"
+#include "vcf.h"
+#include "kseq.h"
 #include "bgzf.h"
-#include "tabix.h"
-#include "knetfile.h"
+#include "hts.h"
+#include "regidx.h"
 
-#define PACKAGE_VERSION "0.2.5 (r1005)"
-
-#define error(...) { fprintf(stderr,__VA_ARGS__); return -1; }
-
-int reheader_file(const char *header, const char *file, int meta)
+typedef struct
 {
-    BGZF *fp = bgzf_open(file,"r");
-    if (bgzf_read_block(fp) != 0 || !fp->block_length)
-        return -1;
-    
-    char *buffer = fp->uncompressed_block;
-    int skip_until = 0;
+    char *regions_fname, *targets_fname;
+    int print_header, header_only;
+}
+args_t;
 
-    if ( buffer[0]==meta )
-    {
-        skip_until = 1;
+static void error(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stderr, format, ap);
+    va_end(ap);
+    exit(EXIT_FAILURE);
+}
 
-        // Skip the header
-        while (1)
-        {
-            if ( buffer[skip_until]=='\n' )
-            {
-                skip_until++;
-                if ( skip_until>=fp->block_length )
-                {
-                    if (bgzf_read_block(fp) != 0 || !fp->block_length)
-                        error("no body?\n");
-                    skip_until = 0;
-                }
-                // The header has finished
-                if ( buffer[skip_until]!=meta ) break;
-            }
-            skip_until++;
-            if ( skip_until>=fp->block_length )
-            {
-                if (bgzf_read_block(fp) != 0 || !fp->block_length)
-                    error("no body?\n");
-                skip_until = 0;
-            }
-        }
-    }
+#define IS_GFF  (1<<0)
+#define IS_BED  (1<<1)
+#define IS_SAM  (1<<2)
+#define IS_VCF  (1<<3)
+#define IS_BCF  (1<<4)
+#define IS_BAM  (1<<5)
+#define IS_CRAM (1<<6)
+#define IS_TXT  (IS_GFF|IS_BED|IS_SAM|IS_VCF)
 
-    FILE *fh = fopen(header,"r");
-    if ( !fh )
-        error("%s: %s", header,strerror(errno));
-    int page_size = getpagesize();
-    char *buf = valloc(page_size);
-    BGZF *bgzf_out = bgzf_dopen(fileno(stdout), "w");
-    ssize_t nread;
-    while ( (nread=fread(buf,1,page_size-1,fh))>0 )
-    {
-        if ( nread<page_size-1 && buf[nread-1]!='\n' )
-            buf[nread++] = '\n';
-        if (bgzf_write(bgzf_out, buf, nread) < 0) error("Error: %d\n",bgzf_out->errcode);
-    }
-    fclose(fh);
+int file_type(const char *fname)
+{
+    int l = strlen(fname);
+    int strcasecmp(const char *s1, const char *s2);
+    if (l>=7 && strcasecmp(fname+l-7, ".gff.gz") == 0) return IS_GFF;
+    else if (l>=7 && strcasecmp(fname+l-7, ".bed.gz") == 0) return IS_BED;
+    else if (l>=7 && strcasecmp(fname+l-7, ".sam.gz") == 0) return IS_SAM;
+    else if (l>=7 && strcasecmp(fname+l-7, ".vcf.gz") == 0) return IS_VCF;
+    else if (l>=4 && strcasecmp(fname+l-4, ".bcf") == 0) return IS_BCF;
+    else if (l>=4 && strcasecmp(fname+l-4, ".bam") == 0) return IS_BAM;
+    else if (l>=4 && strcasecmp(fname+l-5, ".cram") == 0) return IS_CRAM;
 
-    if ( fp->block_length - skip_until > 0 )
-    {
-        if (bgzf_write(bgzf_out, buffer+skip_until, fp->block_length-skip_until) < 0) 
-            error("Error: %d\n",fp->errcode);
-    }
-    if (bgzf_flush(bgzf_out) < 0) 
-        error("Error: %d\n",bgzf_out->errcode);
+    htsFile *fp = hts_open(fname,"r");
+    enum htsExactFormat format = fp->format.format;
+    hts_close(fp);
+    if ( format == bcf ) return IS_BCF;
+    if ( format == bam ) return IS_BAM;
+    if ( format == cram ) return IS_CRAM;
+    if ( format == vcf ) return IS_VCF;
 
-    while (1)
-    {
-#ifdef _USE_KNETFILE
-        nread = knet_read(fp->fp, buf, page_size);
-#else
-        nread = fread(buf, 1, page_size, fp->fp);
-#endif
-        if ( nread<=0 ) 
-            break;
-
-        int count = fwrite(buf, 1, nread, bgzf_out->fp);
-        if (count != nread)
-            error("Write failed, wrote %d instead of %d bytes.\n", count,(int)nread);
-    }
-
-    if (bgzf_close(bgzf_out) < 0) 
-        error("Error: %d\n",bgzf_out->errcode);
-   
     return 0;
 }
 
+static char **parse_regions(char *regions_fname, char **argv, int argc, int *nregs)
+{
+    kstring_t str = {0,0,0};
+    int iseq = 0, ireg = 0;
+    char **regs = NULL;
+    *nregs = argc;
+
+    if ( regions_fname )
+    {
+        // improve me: this is a too heavy machinery for parsing regions...
+
+        regidx_t *idx = regidx_init(regions_fname, NULL, NULL, 0, NULL);
+        if ( !idx ) error("Could not read %s\n", regions_fname);
+
+        (*nregs) += regidx_nregs(idx);
+        regs = (char**) malloc(sizeof(char*)*(*nregs));
+
+        int nseq;
+        char **seqs = regidx_seq_names(idx, &nseq);
+        for (iseq=0; iseq<nseq; iseq++)
+        {
+            regitr_t itr;
+            regidx_overlap(idx, seqs[iseq], 0, UINT32_MAX, &itr);
+            while ( itr.i < itr.n )
+            {
+                str.l = 0;
+                ksprintf(&str, "%s:%d-%d", seqs[iseq], REGITR_START(itr)+1, REGITR_END(itr)+1);
+                regs[ireg++] = strdup(str.s);
+                itr.i++;
+            }
+        }
+        regidx_destroy(idx);
+    }
+    free(str.s);
+
+    if ( !ireg )
+    {
+        if ( argc )
+            regs = (char**) malloc(sizeof(char*)*argc);
+        else
+        {
+            regs = (char**) malloc(sizeof(char*));
+            regs[0] = strdup(".");
+            *nregs = 1;
+        }
+    }
+
+    for (iseq=0; iseq<argc; iseq++) regs[ireg++] = strdup(argv[iseq]);
+    return regs;
+}
+static int query_regions(args_t *args, char *fname, char **regs, int nregs)
+{
+    int i;
+    htsFile *fp = hts_open(fname,"r");
+    if ( !fp ) error("Could not read %s\n", fname);
+    enum htsExactFormat format = hts_get_format(fp)->format;
+
+    regidx_t *reg_idx = NULL;
+    if ( args->targets_fname )
+    {
+        reg_idx = regidx_init(args->targets_fname, NULL, NULL, 0, NULL);
+        if ( !reg_idx ) error("Could not read %s\n", args->targets_fname);
+    }
+
+    if ( format == bcf )
+    {
+        htsFile *out = hts_open("-","w");
+        if ( !out ) error("Could not open stdout\n", fname);
+        hts_idx_t *idx = bcf_index_load(fname);
+        if ( !idx ) error("Could not load .csi index of %s\n", fname);
+        bcf_hdr_t *hdr = bcf_hdr_read(fp);
+        if ( !hdr ) error("Could not read the header: %s\n", fname);
+        if ( args->print_header )
+            bcf_hdr_write(out,hdr);
+        if ( !args->header_only )
+        {
+            bcf1_t *rec = bcf_init();
+            for (i=0; i<nregs; i++)
+            {
+                hts_itr_t *itr = bcf_itr_querys(idx,hdr,regs[i]);
+                while ( bcf_itr_next(fp, itr, rec) >=0 )
+                {
+                    if ( reg_idx && !regidx_overlap(reg_idx, bcf_seqname(hdr,rec),rec->pos,rec->pos+rec->rlen-1, NULL) ) continue; 
+                    bcf_write(out,hdr,rec);
+                }
+                tbx_itr_destroy(itr);
+            }
+            bcf_destroy(rec);
+        }
+        if ( hts_close(out) ) error("hts_close returned non-zero status for stdout\n");
+        bcf_hdr_destroy(hdr);
+        hts_idx_destroy(idx);
+    }
+    else if ( format==vcf || format==sam || format==unknown_format )
+    {
+        tbx_t *tbx = tbx_index_load(fname);
+        if ( !tbx ) error("Could not load .tbi/.csi index of %s\n", fname);
+        kstring_t str = {0,0,0};
+        if ( args->print_header )
+        {
+            while ( hts_getline(fp, KS_SEP_LINE, &str) >= 0 )
+            {
+                if ( !str.l || str.s[0]!=tbx->conf.meta_char ) break;
+                puts(str.s);
+            }
+        }
+        if ( !args->header_only )
+        {
+            int nseq;
+            const char **seq = NULL;
+            if ( reg_idx ) seq = tbx_seqnames(tbx, &nseq);
+            for (i=0; i<nregs; i++)
+            {
+                hts_itr_t *itr = tbx_itr_querys(tbx, regs[i]);
+                if ( !itr ) continue;
+                while (tbx_itr_next(fp, tbx, itr, &str) >= 0)
+                {
+                    if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
+                    puts(str.s);
+                }
+                tbx_itr_destroy(itr);
+            }
+            free(seq);
+        }
+        free(str.s);
+        tbx_destroy(tbx);
+    }
+    else if ( format==bam )
+        error("Please use \"samtools view\" for querying BAM files.\n");
+
+    if ( reg_idx ) regidx_destroy(reg_idx);
+    if ( hts_close(fp) ) error("hts_close returned non-zero status: %s\n", fname);
+
+    for (i=0; i<nregs; i++) free(regs[i]);
+    free(regs);
+    return 0;
+}
+static int query_chroms(char *fname)
+{
+    const char **seq;
+    int i, nseq, ftype = file_type(fname);
+    if ( ftype & IS_TXT || !ftype )
+    {
+        tbx_t *tbx = tbx_index_load(fname);
+        if ( !tbx ) error("Could not load .tbi index of %s\n", fname);
+        seq = tbx_seqnames(tbx, &nseq);
+        for (i=0; i<nseq; i++)
+            printf("%s\n", seq[i]);
+        free(seq);
+        tbx_destroy(tbx);
+    }
+    else if ( ftype==IS_BCF )
+    {
+        htsFile *fp = hts_open(fname,"r");
+        if ( !fp ) error("Could not read %s\n", fname);
+        bcf_hdr_t *hdr = bcf_hdr_read(fp);
+        if ( !hdr ) error("Could not read the header: %s\n", fname);
+        hts_close(fp);
+        hts_idx_t *idx = bcf_index_load(fname);
+        if ( !idx ) error("Could not load .csi index of %s\n", fname);
+        seq = bcf_index_seqnames(idx, hdr, &nseq);
+        for (i=0; i<nseq; i++)
+            printf("%s\n", seq[i]);
+        free(seq);
+        bcf_hdr_destroy(hdr);
+        hts_idx_destroy(idx);
+    }
+    else if ( ftype==IS_BAM )   // todo: BAM
+        error("BAM: todo\n");
+    return 0;
+}
+
+int reheader_file(const char *fname, const char *header, int ftype, tbx_conf_t *conf)
+{
+    if ( ftype & IS_TXT || !ftype )
+    {
+        BGZF *fp = bgzf_open(fname,"r");
+        if ( !fp || bgzf_read_block(fp) != 0 || !fp->block_length ) return -1;
+
+        char *buffer = fp->uncompressed_block;
+        int skip_until = 0;
+
+        // Skip the header: find out the position of the data block
+        if ( buffer[0]==conf->meta_char )
+        {
+            skip_until = 1;
+            while (1)
+            {
+                if ( buffer[skip_until]=='\n' )
+                {
+                    skip_until++;
+                    if ( skip_until>=fp->block_length )
+                    {
+                        if ( bgzf_read_block(fp) != 0 || !fp->block_length ) error("FIXME: No body in the file: %s\n", fname);
+                        skip_until = 0;
+                    }
+                    // The header has finished
+                    if ( buffer[skip_until]!=conf->meta_char ) break;
+                }
+                skip_until++;
+                if ( skip_until>=fp->block_length )
+                {
+                    if (bgzf_read_block(fp) != 0 || !fp->block_length) error("FIXME: No body in the file: %s\n", fname);
+                    skip_until = 0;
+                }
+            }
+        }
+
+        // Output the new header
+        FILE *hdr  = fopen(header,"r");
+        if ( !hdr ) error("%s: %s", header,strerror(errno));
+        const size_t page_size = 32768;
+        char *buf = malloc(page_size);
+        BGZF *bgzf_out = bgzf_open("-", "w");
+        ssize_t nread;
+        while ( (nread=fread(buf,1,page_size-1,hdr))>0 )
+        {
+            if ( nread<page_size-1 && buf[nread-1]!='\n' ) buf[nread++] = '\n';
+            if (bgzf_write(bgzf_out, buf, nread) < 0) error("Error: %d\n",bgzf_out->errcode);
+        }
+        if ( fclose(hdr) ) error("close failed: %s\n", header);
+
+        // Output all remainig data read with the header block
+        if ( fp->block_length - skip_until > 0 )
+        {
+            if (bgzf_write(bgzf_out, buffer+skip_until, fp->block_length-skip_until) < 0) error("Error: %d\n",fp->errcode);
+        }
+        if (bgzf_flush(bgzf_out) < 0) error("Error: %d\n",bgzf_out->errcode);
+
+        while (1)
+        {
+            nread = bgzf_raw_read(fp, buf, page_size);
+            if ( nread<=0 ) break;
+
+            int count = bgzf_raw_write(bgzf_out, buf, nread);
+            if (count != nread) error("Write failed, wrote %d instead of %d bytes.\n", count,(int)nread);
+        }
+        if (bgzf_close(bgzf_out) < 0) error("Error: %d\n",bgzf_out->errcode);
+        if (bgzf_close(fp) < 0) error("Error: %d\n",fp->errcode);
+        free(buf);
+    }
+    else
+        error("todo: reheader BCF, BAM\n");  // BCF is difficult, records contain pointers to the header.
+    return 0;
+}
+
+static int usage(void)
+{
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Version: %s\n", hts_version());
+    fprintf(stderr, "Usage:   tabix [OPTIONS] [FILE] [REGION [...]]\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Indexing Options:\n");
+    fprintf(stderr, "   -0, --zero-based           coordinates are zero-based\n");
+    fprintf(stderr, "   -b, --begin INT            column number for region start [4]\n");
+    fprintf(stderr, "   -c, --comment CHAR         skip comment lines starting with CHAR [null]\n");
+    fprintf(stderr, "   -C, --csi                  generate CSI index for VCF (default is TBI)\n");
+    fprintf(stderr, "   -e, --end INT              column number for region end (if no end, set INT to -b) [5]\n");
+    fprintf(stderr, "   -f, --force                overwrite existing index without asking\n");
+    fprintf(stderr, "   -m, --min-shift INT        set minimal interval size for CSI indices to 2^INT [14]\n");
+    fprintf(stderr, "   -p, --preset STR           gff, bed, sam, vcf\n");
+    fprintf(stderr, "   -s, --sequence INT         column number for sequence names (suppressed by -p) [1]\n");
+    fprintf(stderr, "   -S, --skip-lines INT       skip first INT lines [0]\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Querying and other options:\n");
+    fprintf(stderr, "   -h, --print-header         print also the header lines\n");
+    fprintf(stderr, "   -H, --only-header          print only the header lines\n");
+    fprintf(stderr, "   -l, --list-chroms          list chromosome names\n");
+    fprintf(stderr, "   -r, --reheader FILE        replace the header with the content of FILE\n");
+    fprintf(stderr, "   -R, --regions FILE         restrict to regions listed in the file\n");
+    fprintf(stderr, "   -T, --targets FILE         similar to -R but streams rather than index-jumps\n");
+    fprintf(stderr, "\n");
+    return 1;
+}
 
 int main(int argc, char *argv[])
 {
-	int c, skip = -1, meta = -1, list_chrms = 0, force = 0, print_header = 0, print_only_header = 0, bed_reg = 0;
-	ti_conf_t conf = ti_conf_gff, *conf_ptr = NULL;
-    const char *reheader = NULL;
-	while ((c = getopt(argc, argv, "p:s:b:e:0S:c:lhHfBr:")) >= 0) {
-		switch (c) {
-		case 'B': bed_reg = 1; break;
-		case '0': conf.preset |= TI_FLAG_UCSC; break;
-		case 'S': skip = atoi(optarg); break;
-		case 'c': meta = optarg[0]; break;
-		case 'p':
-			if (strcmp(optarg, "gff") == 0) conf_ptr = &ti_conf_gff;
-			else if (strcmp(optarg, "bed") == 0) conf_ptr = &ti_conf_bed;
-			else if (strcmp(optarg, "sam") == 0) conf_ptr = &ti_conf_sam;
-			else if (strcmp(optarg, "vcf") == 0 || strcmp(optarg, "vcf4") == 0) conf_ptr = &ti_conf_vcf;
-			else if (strcmp(optarg, "psltbl") == 0) conf_ptr = &ti_conf_psltbl;
-			else {
-				fprintf(stderr, "[main] unrecognized preset '%s'\n", optarg);
-				return 1;
-			}
-			break;
-		case 's': conf.sc = atoi(optarg); break;
-		case 'b': conf.bc = atoi(optarg); break;
-		case 'e': conf.ec = atoi(optarg); break;
-        case 'l': list_chrms = 1; break;
-        case 'h': print_header = 1; break;
-        case 'H': print_only_header = 1; break;
-		case 'f': force = 1; break;
-        case 'r': reheader = optarg; break;
-		}
-	}
-	if (optind == argc) {
-		fprintf(stderr, "\n");
-		fprintf(stderr, "Program: tabix (TAB-delimited file InderXer)\n");
-		fprintf(stderr, "Version: %s\n\n", PACKAGE_VERSION);
-		fprintf(stderr, "Usage:   tabix <in.tab.bgz> [region1 [region2 [...]]]\n\n");
-		fprintf(stderr, "Options: -p STR     preset: gff, bed, sam, vcf, psltbl [gff]\n");
-		fprintf(stderr, "         -s INT     sequence name column [1]\n");
-		fprintf(stderr, "         -b INT     start column [4]\n");
-		fprintf(stderr, "         -e INT     end column; can be identical to '-b' [5]\n");
-		fprintf(stderr, "         -S INT     skip first INT lines [0]\n");
-		fprintf(stderr, "         -c CHAR    symbol for comment/meta lines [#]\n");
-	    fprintf(stderr, "         -r FILE    replace the header with the content of FILE [null]\n");
-		fprintf(stderr, "         -B         region1 is a BED file (entire file will be read)\n");
-		fprintf(stderr, "         -0         zero-based coordinate\n");
-		fprintf(stderr, "         -h         print also the header lines\n");
-		fprintf(stderr, "         -H         print only the header lines\n");
-		fprintf(stderr, "         -l         list chromosome names\n");
-		fprintf(stderr, "         -f         force to overwrite the index\n");
-		fprintf(stderr, "\n");
-		return 1;
-	}
-    if ( !conf_ptr )
+    int c, min_shift = 0, is_force = 0, list_chroms = 0, do_csi = 0;
+    tbx_conf_t conf = tbx_conf_gff, *conf_ptr = NULL;
+    char *reheader = NULL;
+    args_t args;
+    memset(&args,0,sizeof(args_t));
+
+    static const struct option loptions[] =
     {
-        int l = strlen(argv[optind]);
-        int strcasecmp(const char *s1, const char *s2);
-    	if (l>=7 && strcasecmp(argv[optind]+l-7, ".gff.gz") == 0) conf_ptr = &ti_conf_gff;
-        else if (l>=7 && strcasecmp(argv[optind]+l-7, ".bed.gz") == 0) conf_ptr = &ti_conf_bed;
-        else if (l>=7 && strcasecmp(argv[optind]+l-7, ".sam.gz") == 0) conf_ptr = &ti_conf_sam;
-        else if (l>=7 && strcasecmp(argv[optind]+l-7, ".vcf.gz") == 0) conf_ptr = &ti_conf_vcf;
-        else if (l>=10 && strcasecmp(argv[optind]+l-10, ".psltbl.gz") == 0) conf_ptr = &ti_conf_psltbl;
+        {"help", no_argument, NULL, 'h'},
+        {"regions", required_argument, NULL, 'R'},
+        {"targets", required_argument, NULL, 'T'},
+        {"csi", no_argument, NULL, 'C'},
+        {"zero-based", no_argument, NULL, '0'},
+        {"print-header", no_argument, NULL, 'h'},
+        {"only-header", no_argument, NULL, 'H'},
+        {"begin", required_argument, NULL, 'b'},
+        {"comment", required_argument, NULL, 'c'},
+        {"end", required_argument, NULL, 'e'},
+        {"force", no_argument, NULL, 'f'},
+        {"preset", required_argument, NULL, 'p'},
+        {"sequence", required_argument, NULL, 's'},
+        {"skip-lines", required_argument, NULL, 'S'},
+        {"list-chroms", no_argument, NULL, 'l'},
+        {"reheader", required_argument, NULL, 'r'},
+        {"version", no_argument, NULL, 1},
+        {NULL, 0, NULL, 0}
+    };
+
+    char *tmp;
+    while ((c = getopt_long(argc, argv, "hH?0b:c:e:fm:p:s:S:lr:CR:T:", loptions,NULL)) >= 0)
+    {
+        switch (c)
+        {
+            case 'R': args.regions_fname = optarg; break;
+            case 'T': args.targets_fname = optarg; break;
+            case 'C': do_csi = 1; break;
+            case 'r': reheader = optarg; break;
+            case 'h': args.print_header = 1; break;
+            case 'H': args.print_header = 1; args.header_only = 1; break;
+            case 'l': list_chroms = 1; break;
+            case '0': conf.preset |= TBX_UCSC; break;
+            case 'b':
+                conf.bc = strtol(optarg,&tmp,10);
+                if ( *tmp ) error("Could not parse argument: -b %s\n", optarg);
+                break;
+            case 'e':
+                conf.ec = strtol(optarg,&tmp,10);
+                if ( *tmp ) error("Could not parse argument: -e %s\n", optarg);
+                break;
+            case 'c': conf.meta_char = *optarg; break;
+            case 'f': is_force = 1; break;
+            case 'm':
+                min_shift = strtol(optarg,&tmp,10);
+                if ( *tmp ) error("Could not parse argument: -m %s\n", optarg);
+                break;
+            case 'p':
+                      if (strcmp(optarg, "gff") == 0) conf_ptr = &tbx_conf_gff;
+                      else if (strcmp(optarg, "bed") == 0) conf_ptr = &tbx_conf_bed;
+                      else if (strcmp(optarg, "sam") == 0) conf_ptr = &tbx_conf_sam;
+                      else if (strcmp(optarg, "vcf") == 0) conf_ptr = &tbx_conf_vcf;
+                      else if (strcmp(optarg, "bcf") == 0) ;    // bcf is autodetected, preset is not needed
+                      else if (strcmp(optarg, "bam") == 0) ;    // same as bcf
+                      else error("The preset string not recognised: '%s'\n", optarg);
+                      break;
+            case 's':
+                conf.sc = strtol(optarg,&tmp,10);
+                if ( *tmp ) error("Could not parse argument: -s %s\n", optarg);
+                break;
+            case 'S':
+                conf.line_skip = strtol(optarg,&tmp,10);
+                if ( *tmp ) error("Could not parse argument: -S %s\n", optarg);
+                break;
+            case 1:
+                printf(
+"tabix (htslib) %s\n"
+"Copyright (C) 2016 Genome Research Ltd.\n", hts_version());
+                return EXIT_SUCCESS;
+            default: return usage();
+        }
     }
+
+    if ( optind==argc ) return usage();
+
+    if ( list_chroms )
+        return query_chroms(argv[optind]);
+
+    if ( argc > optind+1 || args.header_only || args.regions_fname || args.targets_fname )
+    {
+        int nregs = 0;
+        char **regs = NULL;
+        if ( !args.header_only )
+            regs = parse_regions(args.regions_fname, argv+optind+1, argc-optind-1, &nregs);
+        return query_regions(&args, argv[optind], regs, nregs);
+    }
+
+    char *fname = argv[optind];
+    int ftype = file_type(fname);
+    if ( !conf_ptr )    // no preset given
+    {
+        if ( ftype==IS_GFF ) conf_ptr = &tbx_conf_gff;
+        else if ( ftype==IS_BED ) conf_ptr = &tbx_conf_bed;
+        else if ( ftype==IS_SAM ) conf_ptr = &tbx_conf_sam;
+        else if ( ftype==IS_VCF )
+        {
+            conf_ptr = &tbx_conf_vcf;
+            if ( !min_shift && do_csi ) min_shift = 14;
+        }
+        else if ( ftype==IS_BCF )
+        {
+            if ( !min_shift ) min_shift = 14;
+        }
+        else if ( ftype==IS_BAM )
+        {
+            if ( !min_shift ) min_shift = 14;
+        }
+    }
+    if ( do_csi )
+    {
+        if ( !min_shift ) min_shift = 14;
+        min_shift *= do_csi;  // positive for CSIv2, negative for CSIv1
+    }
+    if ( min_shift!=0 && !do_csi ) do_csi = 1;
+
+    if ( reheader )
+        return reheader_file(fname, reheader, ftype, conf_ptr);
+
     if ( conf_ptr )
         conf = *conf_ptr;
 
-	if (skip >= 0) conf.line_skip = skip;
-	if (meta >= 0) conf.meta_char = meta;
-    if (list_chrms) {
-		ti_index_t *idx;
-		int i, n;
-		const char **names;
-		idx = ti_index_load(argv[optind]);
-		if (idx == 0) {
-			fprintf(stderr, "[main] fail to load the index file.\n");
-			return 1;
-		}
-		names = ti_seqname(idx, &n);
-		for (i = 0; i < n; ++i) printf("%s\n", names[i]);
-		free(names);
-		ti_index_destroy(idx);
-		return 0;
-	}
-    if (reheader)
-        return reheader_file(reheader,argv[optind],conf.meta_char);
+    char *suffix = ".tbi";
+    if ( do_csi ) suffix = ".csi";
+    else if ( ftype==IS_BAM ) suffix = ".bai";
+    else if ( ftype==IS_CRAM ) suffix = ".crai";
 
-	struct stat stat_tbi,stat_vcf;
-    char *fnidx = calloc(strlen(argv[optind]) + 5, 1);
-   	strcat(strcpy(fnidx, argv[optind]), ".tbi");
+    char *idx_fname = calloc(strlen(fname) + 5, 1);
+    strcat(strcpy(idx_fname, fname), suffix);
 
-	if (optind + 1 == argc && !print_only_header) {
-		if (force == 0) {
-			if (stat(fnidx, &stat_tbi) == 0) 
-            {
-                // Before complaining, check if the VCF file isn't newer. This is a common source of errors,
-                //  people tend not to notice that tabix failed
-                stat(argv[optind], &stat_vcf);
-                if ( stat_vcf.st_mtime <= stat_tbi.st_mtime )
-                {
-                    fprintf(stderr, "[tabix] the index file exists. Please use '-f' to overwrite.\n");
-                    free(fnidx);
-                    return 1;
-                }
-			}
-		}
-        if ( bgzf_is_bgzf(argv[optind])!=1 )
-        {
-            fprintf(stderr,"[tabix] was bgzip used to compress this file? %s\n", argv[optind]);
-            free(fnidx);
-            return 1;
-        }
-        if ( !conf_ptr )
-        {
-            // Building the index but the file type was neither recognised nor given. If no custom change
-            //  has been made, warn the user that GFF is used 
-            if ( conf.preset==ti_conf_gff.preset 
-                && conf.sc==ti_conf_gff.sc 
-                && conf.bc==ti_conf_gff.bc 
-                && conf.ec==ti_conf_gff.ec 
-                && conf.meta_char==ti_conf_gff.meta_char 
-                && conf.line_skip==ti_conf_gff.line_skip )
-                fprintf(stderr,"[tabix] The file type not recognised and -p not given, using the preset [gff].\n");
-        }
-		return ti_index_build(argv[optind], &conf);
-	}
-	{ // retrieve
-		tabix_t *t;
-        // On some systems, stat on non-existent files returns undefined value for sm_mtime, the user had to use -f
-        int is_remote = (strstr(fnidx, "ftp://") == fnidx || strstr(fnidx, "http://") == fnidx) ? 1 : 0;
-        if ( !is_remote )
-        {
-            // Common source of errors: new VCF is used with an old index
-            stat(fnidx, &stat_tbi);
-            stat(argv[optind], &stat_vcf);
-            if ( force==0 && stat_vcf.st_mtime > stat_tbi.st_mtime )
-            {
-                fprintf(stderr, "[tabix] the index file either does not exist or is older than the vcf file. Please reindex.\n");
-                free(fnidx);
-                return 1;
-            }
-        }
-        free(fnidx);
+    struct stat stat_tbi, stat_file;
+    if ( !is_force && stat(idx_fname, &stat_tbi)==0 )
+    {
+        // Before complaining about existing index, check if the VCF file isn't
+        // newer. This is a common source of errors, people tend not to notice
+        // that tabix failed
+        stat(fname, &stat_file);
+        if ( stat_file.st_mtime <= stat_tbi.st_mtime )
+            error("[tabix] the index file exists. Please use '-f' to overwrite.\n");
+    }
+    free(idx_fname);
 
-		if ((t = ti_open(argv[optind], 0)) == 0) {
-			fprintf(stderr, "[main] fail to open the data file.\n");
-			return 1;
-		}
-        if ( print_only_header )
+    if ( ftype==IS_CRAM )
+    {
+        if ( bam_index_build(fname, min_shift)!=0 ) error("bam_index_build failed: %s\n", fname);
+        return 0;
+    }
+    else if ( do_csi )
+    {
+        if ( ftype==IS_BCF )
         {
-            ti_iter_t iter;
-            const char *s;
-            int len;
-            if (ti_lazy_index_load(t) < 0 && bed_reg == 0) {
-                fprintf(stderr,"[tabix] failed to load the index file.\n");
-                return 1;
-            }
-            const ti_conf_t *idxconf = ti_get_conf(t->idx);
-            iter = ti_query(t, 0, 0, 0);
-            while ((s = ti_read(t, iter, &len)) != 0) {
-                if ((int)(*s) != idxconf->meta_char) break;
-                fputs(s, stdout); fputc('\n', stdout);
-            }
-            ti_iter_destroy(iter);
+            if ( bcf_index_build(fname, min_shift)!=0 ) error("bcf_index_build failed: %s\n", fname);
             return 0;
         }
-
-		if (strcmp(argv[optind+1], ".") == 0) { // retrieve all
-			ti_iter_t iter;
-			const char *s;
-			int len;
-			iter = ti_query(t, 0, 0, 0);
-			while ((s = ti_read(t, iter, &len)) != 0) {
-				fputs(s, stdout); fputc('\n', stdout);
-			}
-			ti_iter_destroy(iter);
-		} else { // retrieve from specified regions
-			int i, len;
-            ti_iter_t iter;
-            const char *s;
-			const ti_conf_t *idxconf;
-
-			if (ti_lazy_index_load(t) < 0 && bed_reg == 0) {
-                fprintf(stderr,"[tabix] failed to load the index file.\n");
-                return 1;
-            }
-			idxconf = ti_get_conf(t->idx);
-
-            if ( print_header )
-            {
-                // If requested, print the header lines here
-                iter = ti_query(t, 0, 0, 0);
-                while ((s = ti_read(t, iter, &len)) != 0) {
-                    if ((int)(*s) != idxconf->meta_char) break;
-                    fputs(s, stdout); fputc('\n', stdout);
-                }
-                ti_iter_destroy(iter);
-            }
-			if (bed_reg) {
-				extern int bed_overlap(const void *_h, const char *chr, int beg, int end);
-				extern void *bed_read(const char *fn);
-				extern void bed_destroy(void *_h);
-
-				const ti_conf_t *conf_ = idxconf? idxconf : &conf; // use the index file if available
-				void *bed = bed_read(argv[optind+1]); // load the BED file
-				ti_interval_t intv;
-
-				if (bed == 0) {
-					fprintf(stderr, "[main] fail to read the BED file.\n");
-					return 1;
-				}
-				iter = ti_query(t, 0, 0, 0);
-				while ((s = ti_read(t, iter, &len)) != 0) {
-					int c;
-					ti_get_intv(conf_, len, (char*)s, &intv);
-					c = *intv.se; *intv.se = '\0';
-					if (bed_overlap(bed, intv.ss, intv.beg, intv.end)) {
-						*intv.se = c;
-						puts(s);
-					}
-					*intv.se = c;
-				}
-                ti_iter_destroy(iter);
-				bed_destroy(bed);
-			} else {
-				for (i = optind + 1; i < argc; ++i) {
-					int tid, beg, end;
-					if (ti_parse_region(t->idx, argv[i], &tid, &beg, &end) == 0) {
-						iter = ti_queryi(t, tid, beg, end);
-							while ((s = ti_read(t, iter, &len)) != 0) {
-							fputs(s, stdout); fputc('\n', stdout);
-						}
-						ti_iter_destroy(iter);
-					} 
-            	    // else fprintf(stderr, "[main] invalid region: unknown target name or minus interval.\n");
-				}
-			}
-		}
-		ti_close(t);
-	}
-	return 0;
+        if ( ftype==IS_BAM )
+        {
+            if ( bam_index_build(fname, min_shift)!=0 ) error("bam_index_build failed: %s\n", fname);
+            return 0;
+        }
+        if ( tbx_index_build(fname, min_shift, &conf)!=0 ) error("tbx_index_build failed: %s\n", fname);
+        return 0;
+    }
+    else    // TBI index
+    {
+        if ( tbx_index_build(fname, min_shift, &conf) ) error("tbx_index_build failed: %s\n", fname);
+        return 0;
+    }
+    return 0;
 }
