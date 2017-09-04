@@ -332,7 +332,8 @@ for(my $i=0; $i < @chrs; ++$i) {
 	    }
 	    
 	    my $op = "$out.$chrs[$i].$start.$end";
-	    my $region = "$chrs[$i]:$start-$end";
+        #my $region = "$chrs[$i]:$start-$end"; #hja_mod
+        my $region = "chr$chrs[$i]:$start-$end";
 	    
 	    my $tgt = "$op.epacts";
 

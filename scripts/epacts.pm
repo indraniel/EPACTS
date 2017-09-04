@@ -28,8 +28,10 @@ $bingnuplot = "gnuplot";
 $binepstopdf = "$epactsdir/bin/epstopdf";
 
 BEGIN {
-## Variables below are hard-coded based on GRCh37
-    @chrs = (1..22,"X","Y","MT");
+## Variables below are hard-coded based on GRCh38
+    @chrs = (1..22,"X","Y","M");
+    @szchrs = qw(248956422 242193529 198295559 190214555 181538259 170805979 159345973 145138636 138394717 133797422 135086622 133275309 114364328 107043718 101991189 90338345 83257441 80373285 58617616 64444167 46709983 50818468 156040895 57227415 16569); 
+
     @szchrs = qw(249250621 243199373 198022430 191154276 180915260 171115067 159138663 146364022 141213431 135534747 135006516 133851895 115169878 107349540 102531392 90354753 81195210 78077248 59128983 63025520 48129895 51304566 155270560 59373566 16569);
     %ichrs = ();
     
@@ -111,6 +113,7 @@ sub vcfSampleIndex {
 
 sub readPedVcf {
     my ($epactsdir,$ped,$vcf,$missing,$pheno,$rcovs,$rcondsnps,$field) = @_;
+
     $rcovs = [] unless ( defined($rcovs) );
     $rcondsnps = [] unless ( defined($rcondsnps) );
     $missing = "NA" unless ( defined($missing) );
@@ -122,7 +125,7 @@ sub readPedVcf {
 
     my @vcfIds = split(/[\s\t\r\n]+/,`$epactsdir/bin/tabix -H $vcf | tail -1`);
     splice(@vcfIds,0,9);
-    for(my $i=0; $i < @vcfIds; ++$i) { $hVcfIds{$vcfIds[$i]} = $i; }
+    for(my $i=0; $i < @vcfIds; ++$i) { $hVcfIds{$vcfIds[$i]} }
     
     my @datIds = ();
     my $iphe;
