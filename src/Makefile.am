@@ -3,6 +3,8 @@
 ## to provide a way for the user to supply additional arguments.
 ACLOCAL_AMFLAGS = -I m4 ${ACLOCAL_FLAGS}
 
+PACKAGE_VERSION := $(shell git describe --always --dirty)
+
 ## Paths to include
 TABIX_VER = 1.4
 TABIX = tabix-$(TABIX_VER)
@@ -84,11 +86,16 @@ libhts_SOURCES = \
 	cram/zfio.c
 
 
-bgzip_SOURCES = bgzip.c bedidx.c $(libhts_SOURCES)
+bgzip_SOURCES = bgzip.c bedidx.c version.h $(libhts_SOURCES)
 
-tabix_SOURCES = tabix.c bedidx.c index.c $(libhts_SOURCES)
+tabix_SOURCES = tabix.c bedidx.c index.c version.h $(libhts_SOURCES)
 
-libtabix_a_SOURCES = bedidx.c index.c $(libhts_SOURCES)
+libtabix_a_SOURCES = bedidx.c index.c version.h $(libhts_SOURCES)
+
+hts.c: version.h
+
+version.h:
+	echo '#define HTS_VERSION "epacts - $(PACKAGE_VERSION)"' > $@
 
 ## building libtabix.a
 #$(TABIX)/libtabix.a: ../data/$(TABIX).tar.bz2
