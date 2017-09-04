@@ -35,9 +35,10 @@ DEALINGS IN THE SOFTWARE.  */
 #include <sys/stat.h>
 #include "bgzf.h"
 #include "hts.h"
-#include "cram.h"
+#include "cram/cram.h"
 #include "hfile.h"
 #include "version.h"
+#include "kstring.h"
 #include "hts_internal.h"
 
 #include "kseq.h"
@@ -1113,7 +1114,7 @@ int hts_file_type(const char *fname)
 
 #define pair64_lt(a,b) ((a).u < (b).u)
 
-#include "htslib/ksort.h"
+#include "ksort.h"
 KSORT_INIT(_off, hts_pair64_t, pair64_lt)
 
 typedef struct {
@@ -1122,7 +1123,7 @@ typedef struct {
     hts_pair64_t *list;
 } bins_t;
 
-#include "htslib/khash.h"
+#include "khash.h"
 KHASH_MAP_INIT_INT(bin, bins_t)
 typedef khash_t(bin) bidx_t;
 
