@@ -33,19 +33,23 @@ noinst_LIBRARIES = libtabix.a
 
 ## pEmmax files
 pEmmax_SOURCES = pEmmax.cpp Parameters.cpp Error.cpp PhredHelper.cpp codonHelper.cpp 
-pEmmax_LDADD = libtabix.a
+pEmmax_LDADD = libtabix.a -lpthread
+pEmmax_CFLAGS = -pthread
 
 ## vcfast files
 vcfast_SOURCES = vcfast.cpp Error.cpp PhredHelper.cpp Parameters.cpp codonHelper.cpp genomePosition.cpp
-vcfast_LDADD = libtabix.a
+vcfast_LDADD = libtabix.a -lpthread
+vcfast_CFLAGS = -pthread
 
 ## chaps files
 chaps_SOURCES = chaps.cpp Error.cpp PhredHelper.cpp Parameters.cpp
-chaps_LDADD = libtabix.a
+chaps_LDADD = libtabix.a -lpthread
+chaps_CFLAGS = -pthread
 
 ## anno files
 anno_SOURCES = Anno.cpp IO.cpp
-anno_LDADD = libtabix.a
+anno_LDADD = libtabix.a -lpthread
+anno_CFLAGS = -pthread
 
 ## libhts
 
@@ -87,8 +91,12 @@ libhts_SOURCES = \
 
 
 bgzip_SOURCES = bgzip.c bedidx.c version.h $(libhts_SOURCES)
+bgzip_LDADD = libtabix.a -lpthread -lm
+bgzip_CFLAGS = -pthread
 
 tabix_SOURCES = tabix.c bedidx.c index.c version.h $(libhts_SOURCES)
+tabix_LDADD = libtabix.a -lpthread -lm
+tabix_CFLAGS = -pthread
 
 libtabix_a_SOURCES = bedidx.c index.c version.h $(libhts_SOURCES)
 
