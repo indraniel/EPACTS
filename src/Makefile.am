@@ -57,17 +57,24 @@ libhts_SOURCES = \
 	kfunc.c \
 	knetfile.c \
 	kstring.c \
+	bcf_sr_sort.c \
 	bgzf.c \
+	errmod.c \
 	faidx.c \
 	hfile.c \
 	hfile_net.c \
 	hts.c \
 	md5.c \
+	multipart.c \
+	probaln.c \
+	realn.c \
 	regidx.c \
 	sam.c \
 	synced_bcf_reader.c \
 	vcf_sweep.c \
 	tbx.c \
+	textutils.c \
+	thread_pool.c \
 	vcf.c \
 	vcfutils.c \
 	cram/cram_codecs.c \
@@ -85,7 +92,6 @@ libhts_SOURCES = \
 	cram/rANS_static.c \
 	cram/sam_header.c \
 	cram/string_alloc.c \
-	cram/thread_pool.c \
 	cram/vlen.c \
 	cram/zfio.c
 
