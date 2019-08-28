@@ -28,6 +28,7 @@ RUN set -x \
         python-pip \
         r-base \
         rpm \
+        libnss-sss \
     && pip install cget
 
 WORKDIR ${SRC_DIR}
