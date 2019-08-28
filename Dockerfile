@@ -34,5 +34,5 @@ RUN cmake -DCMAKE_TOOLCHAIN_FILE=../cget/cget/cget.cmake -DCMAKE_BUILD_TYPE=Rele
     && rm -rf ${SRC_DIR}
 
 WORKDIR /
-ENTRYPOINT [ "epacts" ]
-CMD [ "help" ]
+#ENTRYPOINT [ "epacts" ]
+#CMD [ "help" ]
