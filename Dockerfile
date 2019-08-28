@@ -1,5 +1,8 @@
 FROM ubuntu:16.04
 
+# This is based off of https://github.com/statgen/EPACTS
+# develop branch -- commit: 5c8653e67f51f931f3e17b968d44847b3cde4c1d
+
 ENV SRC_DIR /tmp/epacts-src
 
 RUN set -x \
