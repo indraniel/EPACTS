@@ -5,6 +5,14 @@ FROM debian:stretch-slim
 
 ENV SRC_DIR /tmp/epacts-src
 
+RUN apt-get update -qq \
+    && apt-get -y install apt-transport-https \
+    && echo "deb [trusted=yes] https://gitlab.com/indraniel/hall-lab-debian-repo-1/raw/master stretch main" | tee -a /etc/apt/sources.list \
+    && apt-get update -qq \
+    && apt-get -y install \
+       hall-lab-htslib-1.9 \
+       hall-lab-bcftools-1.9
+
 RUN set -x \
     && apt-get update && apt-get install -y \
         build-essential \
