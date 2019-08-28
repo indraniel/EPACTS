@@ -43,6 +43,7 @@ RUN cmake -DCMAKE_TOOLCHAIN_FILE=../cget/cget/cget.cmake -DCMAKE_BUILD_TYPE=Rele
     && rm -rf ${SRC_DIR}
 
 WORKDIR /
+RUN apt-get clean all
 ENV PATH=/opt/hall-lab/bcftools-1.9/bin:/opt/hall-lab/htslib-1.9/bin:${PATH}
 #ENTRYPOINT [ "epacts" ]
 #CMD [ "help" ]
