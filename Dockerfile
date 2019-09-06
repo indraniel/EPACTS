@@ -5,13 +5,19 @@ FROM debian:stretch-slim
 
 ENV SRC_DIR /tmp/epacts-src
 
+# setup gsutil 
+RUN apt-get update -qq && apt-get -y install apt-transport-https ca-certificates gnupg curl
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+
 RUN apt-get update -qq \
-    && apt-get -y install apt-transport-https \
     && echo "deb [trusted=yes] https://gitlab.com/indraniel/hall-lab-debian-repo-1/raw/master stretch main" | tee -a /etc/apt/sources.list \
     && apt-get update -qq \
     && apt-get -y install \
        hall-lab-htslib-1.9 \
-       hall-lab-bcftools-1.9
+       hall-lab-bcftools-1.9 \
+       google-cloud-sdk \
+       less
 
 RUN set -x \
     && apt-get update && apt-get install -y \
